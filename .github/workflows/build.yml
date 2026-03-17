@@ -56,6 +56,79 @@ jobs:
           rustup target add aarch64-apple-darwin
           cargo install cbindgen
 
+      - name: Cache Pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Cache Cargo Registry & Build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('submodules/railroad_dsl/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Generate Submodule Hashes
+        id: submodule-hashes
+        run: |
+          echo "libsixel=$(git rev-parse HEAD:submodules/libsixel)" >> $GITHUB_OUTPUT
+          echo "coreparse=$(git rev-parse HEAD:submodules/CoreParse)" >> $GITHUB_OUTPUT
+          echo "libgit2=$(git rev-parse HEAD:submodules/libgit2)" >> $GITHUB_OUTPUT
+          echo "sparkle=$(git rev-parse HEAD:submodules/Sparkle)" >> $GITHUB_OUTPUT
+          echo "railroad_dsl=$(git rev-parse HEAD:submodules/railroad_dsl)" >> $GITHUB_OUTPUT
+          
+          # NMSSH 依赖 chain：openssl + libssh2 + NMSSH
+          NM_CHAIN=$(git rev-parse HEAD:submodules/openssl HEAD:submodules/libssh2 HEAD:submodules/NMSSH | shasum | awk '{print $1}')
+          echo "nm_chain=$NM_CHAIN" >> $GITHUB_OUTPUT
+
+      - name: Cache libsixel
+        uses: actions/cache@v4
+        with:
+          path: ThirdParty/libsixel
+          key: ${{ runner.os }}-libsixel-${{ steps.submodule-hashes.outputs.libsixel }}
+
+      - name: Cache CoreParse
+        uses: actions/cache@v4
+        with:
+          path: ThirdParty/CoreParse.framework
+          key: ${{ runner.os }}-coreparse-${{ steps.submodule-hashes.outputs.coreparse }}
+
+      - name: Cache NMSSH Chain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ThirdParty/NMSSH.framework
+            submodules/openssl/build-fat
+            submodules/libssh2/build_x86_64
+            submodules/libssh2/build_arm64
+          key: ${{ runner.os }}-nmssh-${{ steps.submodule-hashes.outputs.nm_chain }}
+
+      - name: Cache libgit2
+        uses: actions/cache@v4
+        with:
+          path: ThirdParty/libgit2
+          key: ${{ runner.os }}-libgit2-${{ steps.submodule-hashes.outputs.libgit2 }}
+
+      - name: Cache Sparkle
+        uses: actions/cache@v4
+        with:
+          path: ThirdParty/Sparkle.framework
+          key: ${{ runner.os }}-sparkle-${{ steps.submodule-hashes.outputs.sparkle }}
+
+      - name: Cache librailroad_dsl
+        uses: actions/cache@v4
+        with:
+          path: ThirdParty/librailroad_dsl
+          key: ${{ runner.os }}-railroad-dsl-${{ steps.submodule-hashes.outputs.railroad_dsl }}
+
       - name: Download Metal Toolchain
         run: xcodebuild -downloadComponent MetalToolchain
 
@@ -79,12 +152,40 @@ jobs:
       - name: Build dependencies
         run: |
           source "$HOME/.cargo/env"
-          # 根据架构设置构建参数
-          if [ "${{ inputs.architecture }}" = "universal" ]; then
-            make deps UNIVERSAL=1
-          else
-            make deps
+          
+          if [ ! -f ThirdParty/libsixel/lib/libsixel.a ]; then
+            echo "Building libsixel..."
+            make fatlibsixel UNIVERSAL=1
           fi
+          
+          if [ ! -d ThirdParty/CoreParse.framework ]; then
+            echo "Building CoreParse..."
+            make CoreParse UNIVERSAL=1
+          fi
+          
+          if [ ! -d ThirdParty/NMSSH.framework ]; then
+            echo "Building NMSSH chain (includes openssl and libssh2)..."
+            make NMSSH UNIVERSAL=1
+          fi
+          
+          if [ ! -f ThirdParty/libgit2/lib/libgit2.a ]; then
+            echo "Building libgit2..."
+            make libgit2 UNIVERSAL=1
+          fi
+          
+          if [ ! -d ThirdParty/Sparkle.framework ]; then
+            echo "Building Sparkle..."
+            make sparkle UNIVERSAL=1
+          fi
+          
+          if [ ! -f ThirdParty/librailroad_dsl/lib/librailroad_dsl.dylib ]; then
+            echo "Building librailroad_dsl..."
+            make librailroad_dsl UNIVERSAL=1
+          fi
+          
+          # 构建剩余的小型/快捷依赖
+          echo "Building remaining fast dependencies (sfsymbolenum pwmadapters bindeps)..."
+          make sfsymbolenum pwmadapters bindeps UNIVERSAL=1
 
       - name: Kill orphan Xcode processes
         run: |
@@ -113,6 +214,7 @@ jobs:
           # 重试最多 3 次，处理 ibtoold 崩溃
           for attempt in 1 2 3; do
             echo "::group::Attempt $attempt of 3"
+            rm -f build_output.txt
 
             set +e
             xcodebuild \
@@ -125,7 +227,7 @@ jobs:
               CODE_SIGNING_ALLOWED=NO \
               $ARCH_FLAGS \
               $EXTRA_FLAGS 2>&1 | tee build_output.txt
-            exit_code=$?
+            exit_code=${PIPESTATUS[0]}
             set -e
             echo "::endgroup::"
 
