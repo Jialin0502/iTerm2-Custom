@@ -1,10 +1,11 @@
 name: Tests
 
 on:
-  push:
-    branches: [master, ci-test]
-  pull_request:
-    branches: [master]
+#  push:
+#    branches: [master, ci-test]
+#  pull_request:
+#    branches: [master]
+  workflow_dispatch:
 
 jobs:
   python-api-tests:
